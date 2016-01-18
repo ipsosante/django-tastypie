@@ -5,6 +5,10 @@ from __future__ import unicode_literals
 from django.http import HttpResponse
 
 
+class HttpOK(HttpResponse):
+    status_code = 200
+
+
 class HttpCreated(HttpResponse):
     status_code = 201
 
@@ -13,10 +17,6 @@ class HttpCreated(HttpResponse):
 
         super(HttpCreated, self).__init__(*args, **kwargs)
         self['Location'] = location
-
-
-class HttpAccepted(HttpResponse):
-    status_code = 202
 
 
 class HttpNoContent(HttpResponse):

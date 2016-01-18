@@ -1393,7 +1393,7 @@ class Resource(six.with_metaclass(DeclarativeMetaclass)):
         Return ``HttpNoContent`` (204 No Content) if
         ``Meta.always_return_data = False`` (default).
 
-        Return ``HttpAccepted`` (200 OK) if
+        Return ``HttpOK`` (200 OK) if
         ``Meta.always_return_data = True``.
         """
         deserialized = self.deserialize(request, request.body, format=request.META.get('CONTENT_TYPE', 'application/json'))
@@ -1446,7 +1446,7 @@ class Resource(six.with_metaclass(DeclarativeMetaclass)):
         ``Meta.always_return_data = False`` (default), return ``HttpNoContent``
         (204 No Content).
         If an existing resource is modified and
-        ``Meta.always_return_data = True``, return ``HttpAccepted`` (200
+        ``Meta.always_return_data = True``, return ``HttpOK`` (200
         OK).
         """
         deserialized = self.deserialize(request, request.body, format=request.META.get('CONTENT_TYPE', 'application/json'))
@@ -1614,7 +1614,7 @@ class Resource(six.with_metaclass(DeclarativeMetaclass)):
                 self.obj_delete(bundle=bundle)
 
         if not self._meta.always_return_data:
-            return http.HttpAccepted()
+            return http.HttpOK()
         else:
             to_be_serialized = {
                 'objects': [
@@ -1623,7 +1623,7 @@ class Resource(six.with_metaclass(DeclarativeMetaclass)):
                 ]
             }
             to_be_serialized = self.alter_list_data_to_serialize(request, to_be_serialized)
-            return self.create_response(request, to_be_serialized, response_class=http.HttpAccepted)
+            return self.create_response(request, to_be_serialized, response_class=http.HttpOK)
 
     def patch_detail(self, request, **kwargs):
         """
@@ -1631,7 +1631,7 @@ class Resource(six.with_metaclass(DeclarativeMetaclass)):
 
         Calls ``obj_update``.
 
-        If the resource is updated, return ``HttpAccepted`` (202 Accepted).
+        If the resource is updated, return ``HttpOK`` (202 Accepted).
         If the resource did not exist, return ``HttpNotFound`` (404 Not Found).
         """
         request = convert_post_to_patch(request)
@@ -1659,11 +1659,11 @@ class Resource(six.with_metaclass(DeclarativeMetaclass)):
         self.update_in_place(request, bundle, deserialized)
 
         if not self._meta.always_return_data:
-            return http.HttpAccepted()
+            return http.HttpOK()
         else:
             bundle = self.full_dehydrate(bundle)
             bundle = self.alter_detail_data_to_serialize(request, bundle)
-            return self.create_response(request, bundle, response_class=http.HttpAccepted)
+            return self.create_response(request, bundle)
 
     def update_in_place(self, request, original_bundle, new_data):
         """
