@@ -13,7 +13,7 @@ from tastypie import __version__
 
 setup(
     name='django-tastypie',
-    version='0.13.0-ipso.1',
+    version='0.13.0-ipso.2',
     description='A flexible & capable API layer for Django.',
     author='Daniel Lindsley',
     author_email='daniel@toastdriven.com',
