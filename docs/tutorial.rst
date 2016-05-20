@@ -35,7 +35,7 @@ Here is ``myapp/models.py``::
         user = models.ForeignKey(User)
         pub_date = models.DateTimeField(default=now)
         title = models.CharField(max_length=200)
-        slug = models.SlugField()
+        slug = models.SlugField(null=True, blank=True)
         body = models.TextField()
 
         def __unicode__(self):
@@ -59,7 +59,7 @@ your project or ``PYTHONPATH``.
 
   1. Download the dependencies:
 
-    * Python 2.6+ or Python 3.3+
+    * Python 2.7+ or Python 3.4+
     * Django 1.7+
     * ``python-mimeparse`` 0.1.4+ (http://pypi.python.org/pypi/python-mimeparse)
     * ``dateutil`` (http://labix.org/python-dateutil)
@@ -72,7 +72,7 @@ your project or ``PYTHONPATH``.
   3. Either symlink the ``tastypie`` directory into your project or copy the
      directory in. What ever works best for you.
 
-.. _GitHub: http://github.com/toastdriven/django-tastypie
+.. _GitHub: https://github.com/django-tastypie/django-tastypie
 .. _PyPI: http://pypi.python.org/pypi/django-tastypie
 
 

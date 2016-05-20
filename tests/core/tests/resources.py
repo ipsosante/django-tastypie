@@ -1,9 +1,10 @@
 import base64
+from collections import OrderedDict
 import copy
 import datetime
 from decimal import Decimal
 import json
-from mock import patch
+from mock import patch, Mock
 import time
 from unittest import skipIf
 
@@ -22,15 +23,24 @@ from django.utils.encoding import force_text
 from tastypie.authentication import BasicAuthentication
 from tastypie.authorization import Authorization
 from tastypie.bundle import Bundle
-from tastypie.exceptions import InvalidFilterError, InvalidSortError, ImmediateHttpResponse, BadRequest, NotFound
-from tastypie import fields
+from tastypie.exceptions import (
+    InvalidFilterError, InvalidSortError, ImmediateHttpResponse, BadRequest,
+    NotFound, UnsupportedFormat,
+)
+from tastypie import fields, http
 from tastypie.paginator import Paginator
-from tastypie.resources import Resource, ModelResource, ALL, ALL_WITH_RELATIONS, convert_post_to_put, convert_post_to_patch
+from tastypie.resources import (
+    ALL, ALL_WITH_RELATIONS, convert_post_to_put, convert_post_to_patch,
+    Resource, ModelResource,
+)
 from tastypie.serializers import Serializer
 from tastypie.throttle import CacheThrottle
 from tastypie.utils import aware_datetime, make_naive
 from tastypie.validation import FormValidation
-from core.models import Note, NoteWithEditor, Subject, MediaBit, AutoNowNote, DateRecord, Counter, MyDefaultPKModel, MyUUIDModel, MyRelatedUUIDModel
+from core.models import (
+    Note, NoteWithEditor, Subject, MediaBit, AutoNowNote, DateRecord, Counter,
+    MyDefaultPKModel, MyUUIDModel, MyRelatedUUIDModel,
+)
 from core.tests.mocks import MockRequest
 from core.utils import adjust_schema, SimpleHandler
 
@@ -72,6 +82,7 @@ class BasicResourceWithDifferentListAndDetailFields(Resource):
 
     class Meta:
         object_class = TestObject
+        detail_uri_name = 'name'
         resource_name = 'basic'
 
 
@@ -82,6 +93,7 @@ class BasicResourceWithDifferentListAndDetailFieldsCallable(Resource):
 
     class Meta:
         object_class = TestObject
+        detail_uri_name = 'name'
         resource_name = 'basic'
 
 
@@ -92,6 +104,7 @@ class BasicResource(Resource):
 
     class Meta:
         object_class = TestObject
+        detail_uri_name = 'name'
         resource_name = 'basic'
         authorization = Authorization()
 
@@ -123,6 +136,7 @@ class AnotherBasicResource(BasicResource):
 
     class Meta:
         object_class = TestObject
+        detail_uri_name = 'name'
         resource_name = 'anotherbasic'
         authorization = Authorization()
 
@@ -149,6 +163,7 @@ class NoUriBasicResource(BasicResource):
 
     class Meta:
         object_class = TestObject
+        detail_uri_name = 'name'
         include_resource_uri = False
         authorization = Authorization()
 
@@ -158,6 +173,7 @@ class NullableNameResource(Resource):
 
     class Meta:
         object_class = TestObject
+        detail_uri_name = 'name'
         resource_name = 'nullable_name'
         authorization = Authorization()
 
@@ -165,6 +181,7 @@ class NullableNameResource(Resource):
 class MangledBasicResource(BasicResource):
     class Meta:
         object_class = TestObject
+        detail_uri_name = 'name'
         resource_name = 'mangledbasic'
         authorization = Authorization()
 
@@ -525,6 +542,37 @@ class ResourceTestCase(TestCase):
 
         self.assertEquals(hydrated.obj.name, "Daniel")
 
+    def test_full_hydrate__can_put_null_to_clear_related_value(self):
+        class RelatedBasicResource(BasicResource):
+            parent = fields.ToOneField(BasicResource, 'parent', null=True, blank=True)
+        basic = RelatedBasicResource()
+        basic_bundle_1 = Bundle(data={
+            'name': 'Daniel',
+            'view_count': 6,
+            'date_joined': None,
+            'parent': None
+        })
+        basic_bundle_1.obj = Mock()
+        basic_bundle_1.obj.date_joined = aware_datetime(2010, 2, 15, 12, 0, 0)
+        basic_bundle_1.obj.parent = Mock()
+
+        self.assertEqual(basic_bundle_1.data['date_joined'], None)
+        self.assertEqual(basic_bundle_1.data['parent'], None)
+        self.assertNotEqual(basic_bundle_1.obj.date_joined, None)
+        self.assertNotEqual(basic_bundle_1.obj.parent, None)
+
+        # Now load up the data.
+        hydrated = basic.full_hydrate(basic_bundle_1)
+
+        self.assertEqual(hydrated.data['name'], 'Daniel')
+        self.assertEqual(hydrated.data['view_count'], 6)
+        self.assertEqual(hydrated.data['date_joined'], None)
+        self.assertEqual(hydrated.data['parent'], None)
+        self.assertEqual(hydrated.obj.name, 'Daniel')
+        self.assertEqual(hydrated.obj.view_count, 6)
+        self.assertEqual(hydrated.obj.date_joined, None)
+        self.assertEqual(hydrated.obj.parent, None)
+
     def test_obj_get_list(self):
         basic = BasicResource()
         bundle = Bundle()
@@ -617,6 +665,7 @@ class ResourceTestCase(TestCase):
         }
         self.assertEqual(schema, expected_schema)
 
+    def test_build_schema__altered_meta(self):
         basic = BasicResource()
         basic._meta.ordering = ['date_joined', 'name']
         basic._meta.filtering = {'date_joined': ['gt', 'gte'], 'name': ALL}
@@ -837,6 +886,7 @@ class NoteResource(ModelResource):
         authorization = Authorization()
         filtering = {
             'content': ['startswith', 'exact'],
+            'created': ALL,
             'title': ALL,
             'slug': ['exact'],
         }
@@ -1012,6 +1062,10 @@ class UserResource(ModelResource):
     class Meta:
         queryset = User.objects.all()
         authorization = Authorization()
+        filtering = {
+            'id': ALL,
+            'username': ALL,
+        }
 
     def get_resource_uri(self, bundle_or_obj=None, url_name='api_dispatch_list'):
         if bundle_or_obj is None:
@@ -1340,7 +1394,7 @@ class CounterUpdateDetailResource(ModelResource):
 
 class ModelResourceTestCase(TestCase):
     fixtures = ['note_testdata.json']
-    urls = 'core.tests.field_urls'
+    urls = 'core.tests.resource_urls'
 
     def setUp(self):
         super(ModelResourceTestCase, self).setUp()
@@ -1687,7 +1741,7 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(resource.determine_format(request), 'application/xml')
 
     def test_build_schema(self):
-        related = RelatedNoteResource()
+        related = RelatedNoteResource(api_name='v1')
         schema = adjust_schema(related.build_schema())
         expected_schema = {
             'filtering': {
@@ -1698,6 +1752,7 @@ class ModelResourceTestCase(TestCase):
             'fields': {
                 'author': {
                     'related_type': 'to_one',
+                    'related_schema': '/api/v1/user/schema/',
                     'nullable': False,
                     'default': 'No default provided.',
                     'readonly': False,
@@ -1754,6 +1809,7 @@ class ModelResourceTestCase(TestCase):
                 },
                 'subjects': {
                     'related_type': 'to_many',
+                    'related_schema': '/api/v1/subjects/schema/',
                     'nullable': False,
                     'default': 'No default provided.',
                     'readonly': False,
@@ -2534,6 +2590,7 @@ class ModelResourceTestCase(TestCase):
 
         resp = resource.put_list(request)
         self.assertEqual(resp.status_code, 204)
+        self.assertNotIn('Content-Type', resp)
         self.assertEqual(resp.content.decode('utf-8'), '')
         self.assertEqual(Note.objects.count(), 3)
         self.assertEqual(Note.objects.filter(is_active=True).count(), 1)
@@ -2580,6 +2637,7 @@ class ModelResourceTestCase(TestCase):
 
         resp = resource.put_detail(request, pk=10)
         self.assertEqual(resp.status_code, 204)
+        self.assertNotIn('Content-Type', resp)
         self.assertEqual(Note.objects.count(), 7)
         new_note = Note.objects.get(slug='cat-is-back')
         self.assertEqual(new_note.content, u'The cat is gone again. I think it was the rabbits that ate him this time.')
@@ -2610,6 +2668,7 @@ class ModelResourceTestCase(TestCase):
 
         resp = nullable_resource.put_detail(request, pk=10)
         self.assertEqual(resp.status_code, 204)
+        self.assertNotIn('Content-Type', resp)
         self.assertEqual(Note.objects.count(), 7)
         new_note = Note.objects.get(slug='cat-is-back')
         self.assertEqual(new_note.author, None)
@@ -2861,6 +2920,7 @@ class ModelResourceTestCase(TestCase):
 
         resp = resource.delete_list(request)
         self.assertEqual(resp.status_code, 204)
+        self.assertNotIn('Content-Type', resp)
         # Only the non-actives are left alive.
         self.assertEqual(Note.objects.count(), 2)
 
@@ -2873,6 +2933,7 @@ class ModelResourceTestCase(TestCase):
 
         resp = resource.delete_detail(request, pk=2)
         self.assertEqual(resp.status_code, 204)
+        self.assertNotIn('Content-Type', resp)
         self.assertEqual(Note.objects.count(), 5)
 
     def test_patch_list(self):
@@ -3227,6 +3288,25 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(related_obj.title, u'First Post!')
         self.assertEqual(list(related_obj.subjects.values_list('id', flat=True)), [1, 2])
 
+    def test_obj_get_across_related(self):
+        new_user = User.objects.create(username='foo')
+        new_note = Note.objects.create(author=new_user)
+
+        class RelatedFilterNoteResource(NoteResource):
+            author = fields.ToOneField(UserResource, 'author')
+
+            class Meta(NoteResource.Meta):
+                filtering = {
+                    'author': ALL_WITH_RELATIONS,
+                }
+
+        resource = RelatedFilterNoteResource()
+        base_bundle = Bundle()
+
+        obj = resource.obj_get(base_bundle, author__username=new_user.username)
+        self.assertTrue(isinstance(obj, Note))
+        self.assertEqual(obj, new_note)
+
     def test_uri_fields(self):
         with_abs_url = WithAbsoluteURLNoteResource()
         base_bundle = Bundle()
@@ -3371,6 +3451,7 @@ class ModelResourceTestCase(TestCase):
             "filtering": {
                 "content": ["startswith", "exact"],
                 "slug": ["exact"],
+                "created": 1,
                 "title": 1
             },
             "ordering": ["title", "slug", "resource_uri"],
@@ -3475,6 +3556,7 @@ class ModelResourceTestCase(TestCase):
                     "type": 'related',
                     "unique": False,
                     "primary_key": False,
+                    "related_schema": '/api/v1/user/schema/',
                     "related_type": 'to_one'
                 },
                 'subjects': {
@@ -3487,6 +3569,7 @@ class ModelResourceTestCase(TestCase):
                     "type": 'related',
                     "unique": False,
                     "primary_key": False,
+                    "related_schema": '/api/v1/subjects/schema/',
                     "related_type": 'to_many'
                 }
             },
@@ -3500,6 +3583,131 @@ class ModelResourceTestCase(TestCase):
         schema = json.loads(resp.content.decode('utf-8'))
 
         self.assertEqual(schema, expected_schema)
+
+    def test_get_schema_with_related_resource_not_in_urls(self):
+        """
+        Test case for #1439. Need to handle schemas for related resources that
+        aren't in any urlconfs.
+        """
+        class GhostResource(Resource):
+            foo = fields.CharField()
+
+            class Meta:
+                object_class = object
+
+        class CustomRelatedNoteResource(RelatedNoteResource):
+            ghost = fields.ToOneField(GhostResource, 'ghost')
+
+            Meta = RelatedNoteResource.Meta
+
+        resource = CustomRelatedNoteResource()
+
+        request = HttpRequest()
+        request.GET = {'format': 'json'}
+        request.method = 'GET'
+
+        # Patch the ``created/updated`` defaults for testability.
+        with patch.object(resource.fields['created'], '_default', new=aware_datetime(2011, 9, 24, 0, 2)):
+            resp = resource.get_schema(request)
+
+        self.assertEqual(resp.status_code, 200)
+
+        expected_schema = {
+            "allowed_detail_http_methods": ["get", "post", "put", "delete", "patch"],
+            "allowed_list_http_methods": ["get", "post", "put", "delete", "patch"],
+            "default_format": "application/json",
+            "default_limit": 20,
+            "fields": {
+                "content": {
+                    "blank": True,
+                    "default": "",
+                    "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'content',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "string",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "created": {
+                    "blank": False,
+                    "default": "2011-09-24T00:02:00",
+                    "help_text": "A date & time as a string. Ex: \"2010-11-10T03:07:43\"",
+                    "verbose_name": 'created',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "datetime",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "is_active": {
+                    "blank": True,
+                    "default": True,
+                    "help_text": "Boolean data. Ex: True",
+                    "verbose_name": 'is active',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "boolean",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "resource_uri": {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'resource uri',
+                    "nullable": False,
+                    "readonly": True,
+                    "type": "string",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "slug": {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'slug',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "string",
+                    "unique": False,
+                    "primary_key": False
+                },
+                "title": {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": "Unicode string data. Ex: \"Hello World\"",
+                    "verbose_name": 'The Title',
+                    "nullable": False,
+                    "readonly": False,
+                    "type": "string",
+                    "unique": False,
+                    "primary_key": False
+                },
+                'ghost': {
+                    "blank": False,
+                    "default": "No default provided.",
+                    "help_text": 'A single related resource. Can be either a URI or set of nested resource data.',
+                    "verbose_name": 'ghost',
+                    "readonly": False,
+                    "nullable": False,
+                    "type": 'related',
+                    "unique": False,
+                    "primary_key": False,
+                    "related_schema": '',
+                    "related_type": 'to_one'
+                }
+            },
+            'default_format': 'application/json',
+            'filtering': {
+                'author': ALL,
+                'subjects': ALL_WITH_RELATIONS,
+            },
+        }
+
+        schema = json.loads(resp.content.decode('utf-8'))
+
+        self.assertEqual(schema['fields'], expected_schema['fields'])
 
     def test_get_multiple(self):
         resource = NoteResource()
@@ -3913,19 +4121,33 @@ class ModelResourceTestCase(TestCase):
 
     def test_obj_update(self):
         self.assertEqual(Note.objects.all().count(), 6)
+
         note = NoteResource()
         base_bundle = Bundle()
         note_obj = note.obj_get(base_bundle, pk=1)
         note_bundle = note.build_bundle(obj=note_obj)
         note_bundle = note.full_dehydrate(note_bundle)
         note_bundle.data['title'] = 'Whee!'
-        note.obj_update(note_bundle, pk=1)
+        with self.assertNumQueries(1):
+            note.obj_update(note_bundle, pk=1)
         self.assertEqual(Note.objects.all().count(), 6)
         numero_uno = Note.objects.get(pk=1)
         self.assertEqual(numero_uno.title, u'Whee!')
         self.assertEqual(numero_uno.slug, u'first-post')
         self.assertEqual(numero_uno.content, u'This is my very first post using my shiny new API. Pretty sweet, huh?')
         self.assertEqual(numero_uno.is_active, True)
+
+        # same setup as above, just need to test with '1' as the pk (str
+        # instead of int)
+        note = NoteResource()
+        base_bundle = Bundle()
+        note_obj = note.obj_get(base_bundle, pk=1)
+        note_bundle = note.build_bundle(obj=note_obj)
+        note_bundle = note.full_dehydrate(note_bundle)
+        note_bundle.data['title'] = 'Whee!'
+        with self.assertNumQueries(1):
+            note.obj_update(note_bundle, pk='1')
+        self.assertEqual(Note.objects.all().count(), 6)
 
         self.assertEqual(Note.objects.all().count(), 6)
         note = RelatedNoteResource()
@@ -4032,7 +4254,9 @@ class ModelResourceTestCase(TestCase):
 
     def test_obj_update_single_hydrate(self):
         counter = Counter.objects.get(pk=1)
+
         self.assertEqual(counter.count, 1)
+
         cr = CounterResource()
         counter_bundle = cr.build_bundle(data={
             "pk": counter.pk,
@@ -4040,6 +4264,7 @@ class ModelResourceTestCase(TestCase):
             "slug": "signups",
         })
         cr.obj_update(counter_bundle, pk=1)
+
         self.assertEqual(Counter.objects.all().count(), 2)
         counter = Counter.objects.get(pk=1)
         self.assertEqual(counter.count, 1)
@@ -4059,6 +4284,23 @@ class ModelResourceTestCase(TestCase):
         self.assertEquals(counter_bundle._update_auth_call_count, 1)
         self.assertEquals(counter_bundle.obj.name, "Signups")
         self.assertEquals(counter_bundle.obj.slug, "signups")
+
+    def test_lookup_kwargs_with_identifiers__field_without_attr(self):
+        """
+        Verify PR #942 fixed.
+        """
+        class FieldWithoutAttributeNoteResource(NoteResource):
+            noattrfield = fields.CharField()
+        note = FieldWithoutAttributeNoteResource()
+        note_bundle = note.build_bundle()
+        note_bundle.data['title'] = 'Whee!'
+
+        # need to use ordered dict to make sure 'noattrfield' comes before
+        # 'id', otherwise the value of 'id' gets used for 'noattrfield'.
+        kwargs = OrderedDict([('noattrfield', 'foo'), ('id', 1)])
+        lookup_kwargs = note.lookup_kwargs_with_identifiers(note_bundle, kwargs)
+
+        self.assertEqual(lookup_kwargs, {'id': 1})
 
     def test_obj_delete(self):
         self.assertEqual(Note.objects.all().count(), 6)
@@ -4176,6 +4418,12 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(another_me_baby_me._meta.resource_name, 'another_me_baby_me')
         self.assertEqual(another_me_baby_me.fields['me_baby_me'].to, 'self')
         self.assertEqual(another_me_baby_me.fields['me_baby_me'].to_class, AnotherSelfResource)
+
+        # make sure these remained the same
+        self.assertEqual(len(me_baby_me.fields), 9)
+        self.assertEqual(me_baby_me._meta.resource_name, 'me_baby_me')
+        self.assertEqual(me_baby_me.fields['me_baby_me'].to, 'self')
+        self.assertEqual(me_baby_me.fields['me_baby_me'].to_class, SelfResource)
 
     def test_subclassing(self):
         class MiniResource(ModelResource):
@@ -4554,9 +4802,15 @@ class YouFail(Exception):
     pass
 
 
+class YouFailWithResponseAttr(Exception):
+    response = None
+
+
 class BustedResource(BasicResource):
+    err_class = YouFail
+
     def get_list(self, request, **kwargs):
-        raise YouFail("Something blew up.")
+        raise self.err_class("Something blew up.")
 
     def get_detail(self, request, **kwargs):
         raise NotFound("It's just not there.")
@@ -4565,7 +4819,7 @@ class BustedResource(BasicResource):
         raise Http404("Not here either")
 
     def post_detail(self, request, **kwargs):
-        raise YouFail("<script>alert(1)</script>")
+        raise self.err_class("<script>alert(1)</script>")
 
 
 @override_settings(TASTYPIE_FULL_DEBUG=False, TASTYPIE_CANNED_ERROR="Sorry, this request could not be processed. Please try again later.")
@@ -4580,7 +4834,78 @@ class BustedResourceTestCase(TestCase):
 
     @override_settings(DEBUG=True, TASTYPIE_FULL_DEBUG=True)
     def test_debug_on_with_full(self):
-        with self.assertRaises(YouFail):
+        with self.assertRaises(self.resource.err_class):
+            self.resource.wrap_view('get_list')(self.request, pk=1)
+
+    @override_settings(DEBUG=True, TASTYPIE_FULL_DEBUG=False)
+    def test_debug_on_without_full(self):
+        mail.outbox = []
+
+        resp = self.resource.wrap_view('get_list')(self.request, pk=1)
+        self.assertEqual(resp.status_code, 500)
+        content = json.loads(resp.content.decode('utf-8'))
+        self.assertEqual(content['error_message'], 'Something blew up.')
+        self.assertTrue(len(content['traceback']) > 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(DEBUG=False, TASTYPIE_FULL_DEBUG=False)
+    def test_debug_off(self):
+        SimpleHandler.logged = []
+
+        resp = self.resource.wrap_view('get_list')(self.request, pk=1)
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.content.decode('utf-8'), '{"error_message": "Sorry, this request could not be processed. Please try again later."}')
+        self.assertEqual(len(SimpleHandler.logged), 1)
+
+        # Ensure that 404s don't send email.
+        resp = self.resource.wrap_view('get_detail')(self.request, pk=10000000)
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.content.decode('utf-8'), '{"error_message": "Sorry, this request could not be processed. Please try again later."}')
+        self.assertEqual(len(SimpleHandler.logged), 1)
+        SimpleHandler.logged = []
+
+    @override_settings(DEBUG=False, TASTYPIE_FULL_DEBUG=False, TASTYPIE_CANNED_ERROR="Oops, you bwoke it.")
+    def test_debug_off_custom_message(self):
+        SimpleHandler.logged = []
+
+        resp = self.resource.wrap_view('get_list')(self.request, pk=1)
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.content.decode('utf-8'), '{"error_message": "Oops, you bwoke it."}')
+        self.assertEqual(len(SimpleHandler.logged), 1)
+        SimpleHandler.logged = []
+
+    def test_http404_raises_404(self):
+        self.request.method = 'POST'
+        resp = self.resource.wrap_view('post_list')(self.request, pk=1)
+        self.assertEqual(resp.status_code, 404)
+
+    @override_settings(DEBUG=True, TASTYPIE_FULL_DEBUG=False)
+    def test_escaping(self):
+        request = HttpRequest()
+        request.method = 'POST'
+        request.POST = {
+            'whatever': 'stuff',
+        }
+        res = self.resource.wrap_view('dispatch_detail')(request, pk=1)
+        self.assertEqual(res.status_code, 500)
+        err_data = json.loads(res.content.decode('utf-8'))
+        self.assertTrue('&lt;script&gt;alert(1)&lt;/script&gt;' in err_data['error_message'])
+
+
+@override_settings(TASTYPIE_FULL_DEBUG=False, TASTYPIE_CANNED_ERROR="Sorry, this request could not be processed. Please try again later.")
+class BustedResourceWithNoneResponseErrorAttrTestCase(TestCase):
+    def setUp(self):
+        super(BustedResourceWithNoneResponseErrorAttrTestCase, self).setUp()
+
+        self.resource = BustedResource()
+        self.resource.err_class = YouFailWithResponseAttr
+        self.request = HttpRequest()
+        self.request.GET = {'format': 'json'}
+        self.request.method = 'GET'
+
+    @override_settings(DEBUG=True, TASTYPIE_FULL_DEBUG=True)
+    def test_debug_on_with_full(self):
+        with self.assertRaises(self.resource.err_class):
             self.resource.wrap_view('get_list')(self.request, pk=1)
 
     @override_settings(DEBUG=True, TASTYPIE_FULL_DEBUG=False)
@@ -4652,3 +4977,42 @@ class ObjectlessResourceTestCase(TestCase):
         bundle = resource.build_bundle()
 
         self.assertTrue(bundle is not None)
+
+
+class Handle500TestCase(TestCase):
+
+    def setUp(self):
+        self.resource = Resource()
+        self.resource.error_response = Mock()
+        self.request = Mock()
+
+    @override_settings(DEBUG=True)
+    @patch('tastypie.resources.traceback')
+    def test_unsupported_format_debug(self, traceback):
+        traceback.format_exception = Mock(return_value=[])
+
+        msg = 'Unknown format message'
+        exc = UnsupportedFormat(msg)
+
+        self.resource._handle_500(self.request, exc)
+
+        self.assertEqual(self.resource.error_response.call_count, 1)
+
+        args, kwargs = self.resource.error_response.call_args
+        self.assertEqual(args[1]['error_message'], msg)
+        self.assertEqual(kwargs['response_class'], http.HttpBadRequest)
+
+    @override_settings(DEBUG=False)
+    @patch('tastypie.resources.traceback')
+    def test_unsupported_format_no_debug(self, traceback):
+        traceback.format_exception = Mock(return_value=[])
+
+        msg = 'Unknown format message'
+        exc = UnsupportedFormat(msg)
+
+        self.resource._handle_500(self.request, exc)
+
+        self.assertEqual(self.resource.error_response.call_count, 1)
+
+        args, kwargs = self.resource.error_response.call_args
+        self.assertEqual(kwargs['response_class'], http.HttpBadRequest)
